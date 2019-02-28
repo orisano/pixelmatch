@@ -49,7 +49,7 @@ func MatchPixel(a, b image.Image, opts ...MatchOption) (image.Image, int, error)
 				diff++
 			} else {
 				c := color.GrayModel.Convert(a.At(x, y)).(color.Gray)
-				c.Y = 255 - uint8(float64(255 - c.Y) * 0.1)
+				c.Y = 255 - uint8(float64(255-c.Y)*0.1)
 				out.Set(x, y, c)
 			}
 		}
