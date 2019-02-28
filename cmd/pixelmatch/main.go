@@ -43,7 +43,8 @@ func run() error {
 		return errors.Wrapf(err, "failed to open image(path=%v)", args[1])
 	}
 
-	out, _, err := pixelmatch.MatchPixel(img1, img2, pixelmatch.Threshold(*threshold))
+	var out image.Image
+	_, err = pixelmatch.MatchPixel(img1, img2, pixelmatch.Threshold(*threshold), pixelmatch.WriteTo(&out))
 	if err != nil {
 		return errors.Wrap(err, "failed to match pixel")
 	}

@@ -11,6 +11,7 @@ var ErrImageSizesNotMatch = errors.New("image sizes do not match")
 type MatchOptions struct {
 	threshold float64
 	includeAA bool
+	writeTo   *image.Image
 }
 
 type MatchOption func(*MatchOptions)
@@ -21,11 +22,17 @@ func Threshold(threshold float64) MatchOption {
 	}
 }
 
+func WriteTo(img *image.Image) MatchOption {
+	return func(o *MatchOptions) {
+		o.writeTo = img
+	}
+}
+
 func IncludeAntiAlias(o *MatchOptions) {
 	o.includeAA = true
 }
 
-func MatchPixel(a, b image.Image, opts ...MatchOption) (image.Image, int, error) {
+func MatchPixel(a, b image.Image, opts ...MatchOption) (int, error) {
 	options := MatchOptions{
 		threshold: 0.1,
 	}
@@ -34,27 +41,41 @@ func MatchPixel(a, b image.Image, opts ...MatchOption) (image.Image, int, error)
 	}
 
 	if !a.Bounds().Eq(b.Bounds()) {
-		return nil, 0, ErrImageSizesNotMatch
+		return 0, ErrImageSizesNotMatch
+	}
+
+	var out *image.RGBA
+	if options.writeTo != nil {
+		out = image.NewRGBA(a.Bounds())
 	}
 
 	maxDelta := 35215 * options.threshold * options.threshold
 	diff := 0
-	out := image.NewRGBA(a.Bounds())
+
 	rect := a.Bounds()
 	for y := rect.Min.Y; y < rect.Max.Y; y++ {
 		for x := rect.Min.X; x < rect.Max.X; x++ {
 			delta := subColor(a.At(x, y), b.At(x, y))
 			if delta > maxDelta {
-				out.SetRGBA(x, y, color.RGBA{R: 255, G: 0, B: 0, A: 255})
+				if out != nil {
+					out.SetRGBA(x, y, color.RGBA{R: 255, G: 0, B: 0, A: 255})
+				}
 				diff++
 			} else {
-				c := color.GrayModel.Convert(a.At(x, y)).(color.Gray)
-				c.Y = 255 - uint8(float64(255-c.Y)*0.1)
-				out.Set(x, y, c)
+				if out != nil {
+					c := color.GrayModel.Convert(a.At(x, y)).(color.Gray)
+					c.Y = 255 - uint8(float64(255-c.Y)*0.1)
+					out.Set(x, y, c)
+				}
 			}
 		}
 	}
-	return out, diff, nil
+
+	if options.writeTo != nil {
+		*options.writeTo = out
+	}
+
+	return diff, nil
 }
 
 func subColor(a, b color.Color) float64 {
