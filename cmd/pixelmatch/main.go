@@ -26,6 +26,7 @@ func main() {
 func run() error {
 	threshold := flag.Float64("threshold", 0.1, "threshold")
 	dest := flag.String("dest", "-", "destination path")
+	aa := flag.Bool("aa", false, "ignore anti alias pixel")
 	flag.Parse()
 
 	args := flag.Args()
@@ -44,7 +45,15 @@ func run() error {
 	}
 
 	var out image.Image
-	_, err = pixelmatch.MatchPixel(img1, img2, pixelmatch.Threshold(*threshold), pixelmatch.WriteTo(&out))
+	opts := []pixelmatch.MatchOption{
+		pixelmatch.Threshold(*threshold),
+		pixelmatch.WriteTo(&out),
+	}
+	if *aa {
+		opts = append(opts, pixelmatch.IncludeAntiAlias)
+	}
+
+	_, err = pixelmatch.MatchPixel(img1, img2, opts...)
 	if err != nil {
 		return errors.Wrap(err, "failed to match pixel")
 	}

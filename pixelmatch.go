@@ -57,10 +57,16 @@ func MatchPixel(a, b image.Image, opts ...MatchOption) (int, error) {
 		for x := rect.Min.X; x < rect.Max.X; x++ {
 			delta := colorDelta(a.At(x, y), b.At(x, y), false)
 			if delta > maxDelta {
-				if out != nil {
-					out.SetRGBA(x, y, color.RGBA{R: 255, G: 0, B: 0, A: 255})
+				if !options.includeAA && (isAntiAliased(a, b, x, y) || isAntiAliased(b, a, x, y)) {
+					if out != nil {
+						out.SetRGBA(x, y, color.RGBA{R: 255, G: 255, A: 255})
+					}
+				} else {
+					if out != nil {
+						out.SetRGBA(x, y, color.RGBA{R: 255, A: 255})
+					}
+					diff++
 				}
-				diff++
 			} else {
 				if out != nil {
 					c := color.GrayModel.Convert(a.At(x, y)).(color.Gray)
@@ -119,4 +125,82 @@ func rgbaToI(rgba *color.RGBA) float64 {
 
 func rgbaToQ(rgba *color.RGBA) float64 {
 	return float64(rgba.R)*0.21147017 + float64(rgba.G)*0.52261711 + float64(rgba.B)*0.31114694
+}
+
+func isAntiAliased(a, b image.Image, x, y int) bool {
+	r := a.Bounds()
+	if onEdge(r, x, y) {
+		return false
+	}
+
+	min := float64(0)
+	minX, minY := -1, -1
+	max := float64(0)
+	maxX, maxY := -1, -1
+
+	c := a.At(x, y)
+	zeroes := 0
+	for dy := -1; dy <= 1; dy++ {
+		for dx := -1; dx <= 1; dx++ {
+			if dy == 0 && dx == 0 {
+				continue
+			}
+			nx := x + dx
+			ny := y + dy
+			delta := colorDelta(c, a.At(nx, ny), true)
+
+			switch {
+			case delta == 0:
+				zeroes++
+				if zeroes > 2 {
+					return false
+				}
+			case delta < min:
+				min = delta
+				minX = nx
+				minY = ny
+			case max < delta:
+				max = delta
+				maxX = nx
+				maxY = ny
+			}
+		}
+	}
+
+	if max == 0 || min == 0 {
+		return false
+	}
+
+	return hasManySiblings(a, minX, minY) && hasManySiblings(b, minX, minY) && hasManySiblings(a, maxX, maxY) && hasManySiblings(b, maxX, maxY)
+}
+
+func hasManySiblings(img image.Image, x, y int) bool {
+	if r := img.Bounds(); onEdge(r, x, y) {
+		return false
+	}
+
+	zeroes := 0
+	r, g, b, a := img.At(x, y).RGBA()
+	for dy := -1; dy <= 1; dy++ {
+		for dx := -1; dx <= 1; dx++ {
+			if dy == 0 && dx == 0 {
+				continue
+			}
+
+			nx := x + dx
+			ny := y + dy
+			nr, ng, nb, na := img.At(nx, ny).RGBA()
+			if r == nr && g == ng && b == nb && a == na {
+				zeroes++
+			}
+			if zeroes > 2 {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func onEdge(r image.Rectangle, x, y int) bool {
+	return x == r.Min.X || x == r.Max.X-1 || y == r.Min.Y || y == r.Max.Y-1
 }
