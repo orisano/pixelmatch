@@ -98,7 +98,7 @@ func colorDelta(a, b color.Color, yOnly bool) float64 {
 		return y
 	}
 	i := rgbaToI(&ca) - rgbaToI(&cb)
-	q := rgbaToQ(&ca) - rgbaToI(&cb)
+	q := rgbaToQ(&ca) - rgbaToQ(&cb)
 	return 0.5053*y*y + 0.299*i*i + 0.1957*q*q
 }
 
@@ -120,11 +120,11 @@ func rgbaToY(rgba *color.RGBA) float64 {
 }
 
 func rgbaToI(rgba *color.RGBA) float64 {
-	return float64(rgba.R)*0.59597799 + float64(rgba.G)*0.27417610 + float64(rgba.B)*0.32180189
+	return float64(rgba.R)*0.59597799 - float64(rgba.G)*0.27417610 - float64(rgba.B)*0.32180189
 }
 
 func rgbaToQ(rgba *color.RGBA) float64 {
-	return float64(rgba.R)*0.21147017 + float64(rgba.G)*0.52261711 + float64(rgba.B)*0.31114694
+	return float64(rgba.R)*0.21147017 - float64(rgba.G)*0.52261711 + float64(rgba.B)*0.31114694
 }
 
 func isAntiAliased(a, b image.Image, x, y int) bool {
@@ -171,7 +171,7 @@ func isAntiAliased(a, b image.Image, x, y int) bool {
 		return false
 	}
 
-	return hasManySiblings(a, minX, minY) && hasManySiblings(b, minX, minY) && hasManySiblings(a, maxX, maxY) && hasManySiblings(b, maxX, maxY)
+	return (hasManySiblings(a, minX, minY) && hasManySiblings(b, minX, minY)) || (hasManySiblings(a, maxX, maxY) && hasManySiblings(b, maxX, maxY))
 }
 
 func hasManySiblings(img image.Image, x, y int) bool {
