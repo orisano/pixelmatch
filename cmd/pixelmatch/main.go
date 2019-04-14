@@ -3,8 +3,6 @@ package main
 import (
 	"flag"
 	"fmt"
-	"github.com/orisano/pixelmatch"
-	"github.com/pkg/errors"
 	"image"
 	"image/jpeg"
 	"image/png"
@@ -12,6 +10,9 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+
+	"github.com/orisano/pixelmatch"
+	"github.com/pkg/errors"
 )
 
 func main() {
