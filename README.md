@@ -1,5 +1,5 @@
 # pixelmatch
-mapbox/pixelmatch ports for go.
+[mapbox/pixelmatch](https://github.com/mapbox/pixelmatch) ports for go.
 
 ## Installation
 library
