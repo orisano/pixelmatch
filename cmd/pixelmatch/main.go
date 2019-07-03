@@ -4,16 +4,51 @@ import (
 	"flag"
 	"fmt"
 	"image"
+	"image/color"
 	"image/jpeg"
 	"image/png"
 	"io"
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
+
+	"github.com/pkg/errors"
 
 	"github.com/orisano/pixelmatch"
-	"github.com/pkg/errors"
 )
+
+type colorValue color.RGBA
+
+func (c *colorValue) String() string {
+	return fmt.Sprintf("#%02x%02x%02x%02x", c.R, c.G, c.B, c.A)
+}
+
+func (c *colorValue) Set(s string) error {
+	r, err := strconv.ParseUint(s[1:3], 16, 8)
+	if err != nil {
+		return err
+	}
+	g, err := strconv.ParseUint(s[3:5], 16, 8)
+	if err != nil {
+		return err
+	}
+	b, err := strconv.ParseUint(s[5:7], 16, 8)
+	if err != nil {
+		return err
+	}
+	a, err := strconv.ParseUint(s[7:9], 16, 8)
+	if err != nil {
+		return err
+	}
+	*c = colorValue(color.RGBA{
+		R: uint8(r),
+		G: uint8(g),
+		B: uint8(b),
+		A: uint8(a),
+	})
+	return nil
+}
 
 func main() {
 	log.SetFlags(0)
@@ -28,6 +63,12 @@ func run() error {
 	threshold := flag.Float64("threshold", 0.1, "threshold")
 	dest := flag.String("dest", "-", "destination path")
 	aa := flag.Bool("aa", false, "ignore anti alias pixel")
+	alpha := flag.Float64("alpha", 0.1, "alpha")
+	antiAliased := colorValue(color.RGBA{R: 255, G: 255})
+	flag.Var(&antiAliased, "aacolor", "anti aliased color")
+	diffColor := colorValue(color.RGBA{R: 255})
+	flag.Var(&diffColor, "diffcolor", "diff color")
+
 	flag.Parse()
 
 	args := flag.Args()
@@ -48,6 +89,9 @@ func run() error {
 	var out image.Image
 	opts := []pixelmatch.MatchOption{
 		pixelmatch.Threshold(*threshold),
+		pixelmatch.Alpha(*alpha),
+		pixelmatch.AntiAliasedColor(color.RGBA(antiAliased)),
+		pixelmatch.DiffColor(color.RGBA(diffColor)),
 		pixelmatch.WriteTo(&out),
 	}
 	if *aa {
