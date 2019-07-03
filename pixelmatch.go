@@ -9,9 +9,12 @@ import (
 var ErrImageSizesNotMatch = errors.New("image sizes do not match")
 
 type MatchOptions struct {
-	threshold float64
-	includeAA bool
-	writeTo   *image.Image
+	threshold        float64
+	includeAA        bool
+	alpha            float64
+	antiAliasedColor color.RGBA
+	diffColor        color.RGBA
+	writeTo          *image.Image
 }
 
 type MatchOption func(*MatchOptions)
@@ -32,9 +35,48 @@ func IncludeAntiAlias(o *MatchOptions) {
 	o.includeAA = true
 }
 
+func Alpha(alpha float64) MatchOption {
+	return func(o *MatchOptions) {
+		o.alpha = alpha
+	}
+}
+
+func AntiAliasedColor(c color.Color) MatchOption {
+	return func(o *MatchOptions) {
+		o.antiAliasedColor = color.RGBAModel.Convert(c).(color.RGBA)
+	}
+}
+
+func DiffColor(c color.Color) MatchOption {
+	return func(o *MatchOptions) {
+		o.diffColor = color.RGBAModel.Convert(c).(color.RGBA)
+	}
+}
+
+type rgba struct {
+	R float64
+	G float64
+	B float64
+	A float64
+}
+
+func rgbaFromColor(c color.Color) *rgba {
+	const x = 1.0 / 256.0
+	r, g, b, a := c.RGBA()
+	return &rgba{
+		R: float64(r) * x,
+		G: float64(g) * x,
+		B: float64(b) * x,
+		A: float64(a) * x,
+	}
+}
+
 func MatchPixel(a, b image.Image, opts ...MatchOption) (int, error) {
 	options := MatchOptions{
-		threshold: 0.1,
+		threshold:        0.1,
+		alpha:            0.1,
+		antiAliasedColor: color.RGBA{R: 255, G: 255},
+		diffColor:        color.RGBA{R: 255},
 	}
 	for _, opt := range opts {
 		opt(&options)
@@ -59,19 +101,23 @@ func MatchPixel(a, b image.Image, opts ...MatchOption) (int, error) {
 			if delta > maxDelta {
 				if !options.includeAA && (isAntiAliased(a, b, x, y) || isAntiAliased(b, a, x, y)) {
 					if out != nil {
-						out.SetRGBA(x, y, color.RGBA{R: 255, G: 255, A: 255})
+						c := options.antiAliasedColor
+						c.A = 255
+						out.SetRGBA(x, y, c)
 					}
 				} else {
 					if out != nil {
-						out.SetRGBA(x, y, color.RGBA{R: 255, A: 255})
+						c := options.diffColor
+						c.A = 255
+						out.SetRGBA(x, y, c)
 					}
 					diff++
 				}
 			} else {
 				if out != nil {
-					c := color.GrayModel.Convert(a.At(x, y)).(color.Gray)
-					c.Y = 255 - uint8(float64(255-c.Y)*0.1)
-					out.Set(x, y, c)
+					c := rgbaFromColor(a.At(x, y))
+					v := uint8(blend(rgbaToY(c), options.alpha*c.A/255))
+					out.SetRGBA(x, y, color.RGBA{R: v, G: v, B: v, A: 255})
 				}
 			}
 		}
@@ -90,64 +136,67 @@ func colorDelta(a, b color.Color, yOnly bool) float64 {
 	if ca.A == cb.A && ca.R == cb.R && ca.G == cb.G && ca.B == cb.B {
 		return 0
 	}
-	blendRGBA(&ca)
-	blendRGBA(&cb)
+	fa := rgbaFromColor(ca)
+	fb := rgbaFromColor(cb)
 
-	y := rgbaToY(&ca) - rgbaToY(&cb)
+	blendRGBA(fa)
+	blendRGBA(fb)
+
+	y := rgbaToY(fa) - rgbaToY(fb)
 	if yOnly {
 		return y
 	}
-	i := rgbaToI(&ca) - rgbaToI(&cb)
-	q := rgbaToQ(&ca) - rgbaToQ(&cb)
+	i := rgbaToI(fa) - rgbaToI(fb)
+	q := rgbaToQ(fa) - rgbaToQ(fb)
 	return 0.5053*y*y + 0.299*i*i + 0.1957*q*q
 }
 
-func blendRGBA(rgba *color.RGBA) {
-	if rgba.A < 255 {
-		a := float64(rgba.A) / 255
-		rgba.R = blend(rgba.R, a)
-		rgba.G = blend(rgba.G, a)
-		rgba.B = blend(rgba.B, a)
+func blendRGBA(c *rgba) {
+	if c.A < 255 {
+		a := c.A / 255
+		c.R = blend(c.R, a)
+		c.G = blend(c.G, a)
+		c.B = blend(c.B, a)
 	}
 }
 
-func blend(c uint8, a float64) uint8 {
-	return uint8(255 + float64(c-255)*a)
+func blend(c float64, a float64) float64 {
+	return 255 + (c-255)*a
 }
 
-func rgbaToY(rgba *color.RGBA) float64 {
-	return float64(rgba.R)*0.29889531 + float64(rgba.G)*0.58662247 + float64(rgba.B)*0.11448223
+func rgbaToY(c *rgba) float64 {
+	return c.R*0.29889531 + c.G*0.58662247 + c.B*0.11448223
 }
 
-func rgbaToI(rgba *color.RGBA) float64 {
-	return float64(rgba.R)*0.59597799 - float64(rgba.G)*0.27417610 - float64(rgba.B)*0.32180189
+func rgbaToI(c *rgba) float64 {
+	return c.R*0.59597799 - c.G*0.27417610 - c.B*0.32180189
 }
 
-func rgbaToQ(rgba *color.RGBA) float64 {
-	return float64(rgba.R)*0.21147017 - float64(rgba.G)*0.52261711 + float64(rgba.B)*0.31114694
+func rgbaToQ(c *rgba) float64 {
+	return c.R*0.21147017 - c.G*0.52261711 + c.B*0.31114694
 }
 
-func isAntiAliased(a, b image.Image, x, y int) bool {
+func isAntiAliased(a, b image.Image, x1, y1 int) bool {
 	r := a.Bounds()
-	if onEdge(r, x, y) {
-		return false
+	x0 := maxInt(x1-1, r.Min.X)
+	y0 := maxInt(y1-1, r.Min.Y)
+	x2 := minInt(x1+1, r.Max.X-1)
+	y2 := minInt(y1+1, r.Max.Y-1)
+	zeroes := 0
+	if x1 == x0 || x1 == x2 || y1 == y0 || y1 == y2 {
+		zeroes = 1
 	}
 
-	min := float64(0)
-	minX, minY := -1, -1
-	max := float64(0)
-	maxX, maxY := -1, -1
-
-	c := a.At(x, y)
-	zeroes := 0
-	for dy := -1; dy <= 1; dy++ {
-		for dx := -1; dx <= 1; dx++ {
-			if dy == 0 && dx == 0 {
+	min := 0.0
+	max := 0.0
+	var minX, minY, maxX, maxY int
+	c := a.At(x1, y1)
+	for x := x0; x <= x2; x++ {
+		for y := y0; y <= y2; y++ {
+			if x == x1 && y == y1 {
 				continue
 			}
-			nx := x + dx
-			ny := y + dy
-			delta := colorDelta(c, a.At(nx, ny), true)
+			delta := colorDelta(c, a.At(x, y), true)
 
 			switch {
 			case delta == 0:
@@ -157,12 +206,12 @@ func isAntiAliased(a, b image.Image, x, y int) bool {
 				}
 			case delta < min:
 				min = delta
-				minX = nx
-				minY = ny
+				minX = x
+				minY = y
 			case max < delta:
 				max = delta
-				maxX = nx
-				maxY = ny
+				maxX = x
+				maxY = y
 			}
 		}
 	}
@@ -174,22 +223,25 @@ func isAntiAliased(a, b image.Image, x, y int) bool {
 	return (hasManySiblings(a, minX, minY) && hasManySiblings(b, minX, minY)) || (hasManySiblings(a, maxX, maxY) && hasManySiblings(b, maxX, maxY))
 }
 
-func hasManySiblings(img image.Image, x, y int) bool {
-	if r := img.Bounds(); onEdge(r, x, y) {
-		return false
+func hasManySiblings(img image.Image, x1, y1 int) bool {
+	rect := img.Bounds()
+	x0 := maxInt(x1-1, rect.Min.X)
+	y0 := maxInt(y1-1, rect.Min.Y)
+	x2 := minInt(x1+1, rect.Max.X-1)
+	y2 := minInt(y1+1, rect.Max.Y-1)
+	zeroes := 0
+	if x1 == x0 || x1 == x2 || y1 == y0 || y1 == y2 {
+		zeroes = 1
 	}
 
-	zeroes := 0
-	r, g, b, a := img.At(x, y).RGBA()
-	for dy := -1; dy <= 1; dy++ {
-		for dx := -1; dx <= 1; dx++ {
-			if dy == 0 && dx == 0 {
+	r, g, b, a := img.At(x1, y1).RGBA()
+	for x := x0; x <= x2; x++ {
+		for y := y0; y <= y2; y++ {
+			if x == x1 && y == y1 {
 				continue
 			}
 
-			nx := x + dx
-			ny := y + dy
-			nr, ng, nb, na := img.At(nx, ny).RGBA()
+			nr, ng, nb, na := img.At(x, y).RGBA()
 			if r == nr && g == ng && b == nb && a == na {
 				zeroes++
 			}
@@ -201,6 +253,18 @@ func hasManySiblings(img image.Image, x, y int) bool {
 	return false
 }
 
-func onEdge(r image.Rectangle, x, y int) bool {
-	return x == r.Min.X || x == r.Max.X-1 || y == r.Min.Y || y == r.Max.Y-1
+func maxInt(a, b int) int {
+	if a < b {
+		return b
+	} else {
+		return a
+	}
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	} else {
+		return b
+	}
 }
