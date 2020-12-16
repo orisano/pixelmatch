@@ -5,6 +5,7 @@ import (
 	"errors"
 	"image"
 	"image/color"
+	"math"
 )
 
 var ErrImageSizesNotMatch = errors.New("image sizes do not match")
@@ -15,6 +16,7 @@ type MatchOptions struct {
 	alpha            float64
 	antiAliasedColor color.RGBA
 	diffColor        color.RGBA
+	diffColorAlt     *color.RGBA
 	diffMask         bool
 	writeTo          *image.Image
 }
@@ -52,6 +54,13 @@ func AntiAliasedColor(c color.Color) MatchOption {
 func DiffColor(c color.Color) MatchOption {
 	return func(o *MatchOptions) {
 		o.diffColor = color.RGBAModel.Convert(c).(color.RGBA)
+	}
+}
+
+func DiffColorAlt(c color.Color) MatchOption {
+	return func(o *MatchOptions) {
+		diffColorAlt := color.RGBAModel.Convert(c).(color.RGBA)
+		o.diffColorAlt = &diffColorAlt
 	}
 }
 
@@ -118,7 +127,7 @@ func MatchPixel(a, b image.Image, opts ...MatchOption) (int, error) {
 	for y := rect.Min.Y; y < rect.Max.Y; y++ {
 		for x := rect.Min.X; x < rect.Max.X; x++ {
 			delta := colorDelta(a.At(x, y), b.At(x, y), false)
-			if delta > maxDelta {
+			if math.Abs(delta) > maxDelta {
 				if !options.includeAA && (isAntiAliased(a, b, x, y) || isAntiAliased(b, a, x, y)) {
 					if out != nil && !options.diffMask {
 						c := options.antiAliasedColor
@@ -127,9 +136,15 @@ func MatchPixel(a, b image.Image, opts ...MatchOption) (int, error) {
 					}
 				} else {
 					if out != nil {
-						c := options.diffColor
-						c.A = 255
-						out.SetRGBA(x, y, c)
+						if delta < 0 && options.diffColorAlt != nil {
+							c := *options.diffColorAlt
+							c.A = 255
+							out.SetRGBA(x, y, c)
+						} else {
+							c := options.diffColor
+							c.A = 255
+							out.SetRGBA(x, y, c)
+						}
 					}
 					diff++
 				}
@@ -162,13 +177,20 @@ func colorDelta(a, b color.Color, yOnly bool) float64 {
 	blendRGBA(fa)
 	blendRGBA(fb)
 
-	y := rgbaToY(fa) - rgbaToY(fb)
+	ya := rgbaToY(fa)
+	yb := rgbaToY(fb)
+	y := ya - yb
 	if yOnly {
 		return y
 	}
 	i := rgbaToI(fa) - rgbaToI(fb)
 	q := rgbaToQ(fa) - rgbaToQ(fb)
-	return 0.5053*y*y + 0.299*i*i + 0.1957*q*q
+	delta := 0.5053*y*y + 0.299*i*i + 0.1957*q*q
+	if ya > yb {
+		return -delta
+	} else {
+		return delta
+	}
 }
 
 func blendRGBA(c *rgba) {
