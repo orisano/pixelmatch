@@ -13,8 +13,6 @@ import (
 	"path/filepath"
 	"strconv"
 
-	"github.com/pkg/errors"
-
 	"github.com/orisano/pixelmatch"
 )
 
@@ -79,11 +77,11 @@ func run() error {
 	}
 	img1, err := openImage(args[0])
 	if err != nil {
-		return errors.Wrapf(err, "failed to open image(path=%v)", args[0])
+		return fmt.Errorf("open image(path=%v): %w", args[0], err)
 	}
 	img2, err := openImage(args[1])
 	if err != nil {
-		return errors.Wrapf(err, "failed to open image(path=%v)", args[1])
+		return fmt.Errorf("open image(path=%v): %w", args[1], err)
 	}
 
 	var out image.Image
@@ -100,7 +98,7 @@ func run() error {
 
 	_, err = pixelmatch.MatchPixel(img1, img2, opts...)
 	if err != nil {
-		return errors.Wrap(err, "failed to match pixel")
+		return fmt.Errorf("match pixel: %w", err)
 	}
 
 	format := "png"
@@ -114,11 +112,11 @@ func run() error {
 		case ".jpeg", ".jpg":
 			format = "jpeg"
 		default:
-			return errors.Errorf("unsupported format: %v", ext)
+			return fmt.Errorf("unsupported format(%v)", ext)
 		}
 		f, err := os.Create(*dest)
 		if err != nil {
-			return errors.Wrap(err, "failed to create destination image")
+			return fmt.Errorf("create destination image: %w", err)
 		}
 		defer f.Close()
 		w = f
@@ -132,7 +130,7 @@ func run() error {
 		encErr = jpeg.Encode(w, out, nil)
 	}
 	if encErr != nil {
-		return errors.Wrap(encErr, "failed to encode")
+		return fmt.Errorf("encode: %w", encErr)
 	}
 	return nil
 }
@@ -140,13 +138,13 @@ func run() error {
 func openImage(path string) (image.Image, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, errors.Wrap(err, "failed to open")
+		return nil, err
 	}
 	defer f.Close()
 
 	img, _, err := image.Decode(f)
 	if err != nil {
-		return nil, errors.Wrap(err, "failed to decode image")
+		return nil, fmt.Errorf("decode image: %w", err)
 	}
 	return img, nil
 }
