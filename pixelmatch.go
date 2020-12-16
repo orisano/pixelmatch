@@ -1,6 +1,7 @@
 package pixelmatch
 
 import (
+	"bytes"
 	"errors"
 	"image"
 	"image/color"
@@ -89,6 +90,20 @@ func MatchPixel(a, b image.Image, opts ...MatchOption) (int, error) {
 	var out *image.RGBA
 	if options.writeTo != nil {
 		out = image.NewRGBA(a.Bounds())
+	}
+
+	if isIdentical(a, b) { // fast path if identical
+		if out != nil {
+			rect := a.Bounds()
+			for y := rect.Min.Y; y < rect.Max.Y; y++ {
+				for x := rect.Min.X; x < rect.Max.X; x++ {
+					c := rgbaFromColor(a.At(x, y))
+					v := uint8(blend(rgbaToY(c), options.alpha*c.A/255))
+					out.SetRGBA(x, y, color.RGBA{R: v, G: v, B: v, A: 255})
+				}
+			}
+		}
+		return 0, nil
 	}
 
 	maxDelta := 35215 * options.threshold * options.threshold
@@ -267,4 +282,35 @@ func minInt(a, b int) int {
 	} else {
 		return b
 	}
+}
+
+func isIdentical(a, b image.Image) bool {
+	switch x := a.(type) {
+	case *image.RGBA:
+		y, ok := b.(*image.RGBA)
+		if ok && bytes.Equal(x.Pix, y.Pix) {
+			return true
+		}
+	case *image.RGBA64:
+		y, ok := b.(*image.RGBA64)
+		if ok && bytes.Equal(x.Pix, y.Pix) {
+			return true
+		}
+	case *image.NRGBA:
+		y, ok := b.(*image.NRGBA)
+		if ok && bytes.Equal(x.Pix, y.Pix) {
+			return true
+		}
+	case *image.NRGBA64:
+		y, ok := b.(*image.NRGBA64)
+		if ok && bytes.Equal(x.Pix, y.Pix) {
+			return true
+		}
+	case *image.Gray:
+		y, ok := b.(*image.Gray)
+		if ok && bytes.Equal(x.Pix, y.Pix) {
+			return true
+		}
+	}
+	return false
 }
