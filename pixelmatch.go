@@ -15,6 +15,7 @@ type MatchOptions struct {
 	alpha            float64
 	antiAliasedColor color.RGBA
 	diffColor        color.RGBA
+	diffMask         bool
 	writeTo          *image.Image
 }
 
@@ -52,6 +53,10 @@ func DiffColor(c color.Color) MatchOption {
 	return func(o *MatchOptions) {
 		o.diffColor = color.RGBAModel.Convert(c).(color.RGBA)
 	}
+}
+
+func EnableDiffMask(o *MatchOptions) {
+	o.diffMask = true
 }
 
 type rgba struct {
@@ -93,7 +98,7 @@ func MatchPixel(a, b image.Image, opts ...MatchOption) (int, error) {
 	}
 
 	if isIdentical(a, b) { // fast path if identical
-		if out != nil {
+		if out != nil && !options.diffMask {
 			rect := a.Bounds()
 			for y := rect.Min.Y; y < rect.Max.Y; y++ {
 				for x := rect.Min.X; x < rect.Max.X; x++ {
@@ -115,7 +120,7 @@ func MatchPixel(a, b image.Image, opts ...MatchOption) (int, error) {
 			delta := colorDelta(a.At(x, y), b.At(x, y), false)
 			if delta > maxDelta {
 				if !options.includeAA && (isAntiAliased(a, b, x, y) || isAntiAliased(b, a, x, y)) {
-					if out != nil {
+					if out != nil && !options.diffMask {
 						c := options.antiAliasedColor
 						c.A = 255
 						out.SetRGBA(x, y, c)
@@ -129,7 +134,7 @@ func MatchPixel(a, b image.Image, opts ...MatchOption) (int, error) {
 					diff++
 				}
 			} else {
-				if out != nil {
+				if out != nil && !options.diffMask {
 					c := rgbaFromColor(a.At(x, y))
 					v := uint8(blend(rgbaToY(c), options.alpha*c.A/255))
 					out.SetRGBA(x, y, color.RGBA{R: v, G: v, B: v, A: 255})
