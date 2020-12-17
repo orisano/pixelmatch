@@ -69,21 +69,16 @@ func EnableDiffMask(o *MatchOptions) {
 }
 
 type rgba struct {
-	R float64
-	G float64
-	B float64
-	A float64
+	R, G, B, A uint32
 }
 
-func rgbaFromColor(c color.Color) *rgba {
+func rgbaFromColor(c *rgba) (r, g, b, a float64) {
 	const x = 1.0 / 256.0
-	r, g, b, a := c.RGBA()
-	return &rgba{
-		R: float64(r) * x,
-		G: float64(g) * x,
-		B: float64(b) * x,
-		A: float64(a) * x,
-	}
+	r = float64(c.R) * x
+	g = float64(c.G) * x
+	b = float64(c.B) * x
+	a = float64(c.A) * x
+	return
 }
 
 func MatchPixel(a, b image.Image, opts ...MatchOption) (int, error) {
@@ -105,14 +100,17 @@ func MatchPixel(a, b image.Image, opts ...MatchOption) (int, error) {
 	if options.writeTo != nil {
 		out = image.NewRGBA(a.Bounds())
 	}
-
+	aa := options.alpha / 255
 	if isIdentical(a, b) { // fast path if identical
 		if out != nil && !options.diffMask {
 			rect := a.Bounds()
+			aLine := make([]rgba, rect.Dx())
 			for y := rect.Min.Y; y < rect.Max.Y; y++ {
-				for x := rect.Min.X; x < rect.Max.X; x++ {
-					c := rgbaFromColor(a.At(x, y))
-					v := uint8(blend(rgbaToY(c), options.alpha*c.A/255))
+				readLine(aLine, a, y)
+				for i := range aLine {
+					x := rect.Min.X + i
+					r, g, b, a := rgbaFromColor(&aLine[i])
+					v := uint8(blend(rgbaToY(r, g, b), a*aa))
 					out.SetRGBA(x, y, color.RGBA{R: v, G: v, B: v, A: 255})
 				}
 			}
@@ -124,37 +122,62 @@ func MatchPixel(a, b image.Image, opts ...MatchOption) (int, error) {
 	diff := 0
 
 	rect := a.Bounds()
-	for y := rect.Min.Y; y < rect.Max.Y; y++ {
-		for x := rect.Min.X; x < rect.Max.X; x++ {
-			delta := colorDelta(a.At(x, y), b.At(x, y), false)
+	outLine := make([]uint8, rect.Dx()*4)
+
+	y := rect.Min.Y
+	ar := newImageLineReader(a, y)
+	br := newImageLineReader(b, y)
+	for ; ar.Next() && br.Next(); y++ {
+		aLine := ar.Line()
+		bLine := br.Line()
+
+		for i := range aLine {
+			delta := colorDelta(&aLine[i], &bLine[i], false)
+			x := rect.Min.X + i
 			if math.Abs(delta) > maxDelta {
-				if !options.includeAA && (isAntiAliased(a, b, x, y) || isAntiAliased(b, a, x, y)) {
+				if !options.includeAA && (isAntiAliased(ar, br, x, y) || isAntiAliased(br, ar, x, y)) {
 					if out != nil && !options.diffMask {
 						c := options.antiAliasedColor
-						c.A = 255
-						out.SetRGBA(x, y, c)
+						d := outLine[i*4 : i*4+4 : i*4+4]
+						d[0] = c.R
+						d[1] = c.G
+						d[2] = c.B
+						d[3] = 255
 					}
 				} else {
 					if out != nil {
 						if delta < 0 && options.diffColorAlt != nil {
 							c := *options.diffColorAlt
-							c.A = 255
-							out.SetRGBA(x, y, c)
+							d := outLine[i*4 : i*4+4 : i*4+4]
+							d[0] = c.R
+							d[1] = c.G
+							d[2] = c.B
+							d[3] = 255
 						} else {
 							c := options.diffColor
-							c.A = 255
-							out.SetRGBA(x, y, c)
+							d := outLine[i*4 : i*4+4 : i*4+4]
+							d[0] = c.R
+							d[1] = c.G
+							d[2] = c.B
+							d[3] = 255
 						}
 					}
 					diff++
 				}
 			} else {
 				if out != nil && !options.diffMask {
-					c := rgbaFromColor(a.At(x, y))
-					v := uint8(blend(rgbaToY(c), options.alpha*c.A/255))
-					out.SetRGBA(x, y, color.RGBA{R: v, G: v, B: v, A: 255})
+					r, g, b, a := rgbaFromColor(&aLine[i])
+					v := uint8(blend(rgbaToY(r, g, b), aa*a))
+					d := outLine[i*4 : i*4+4 : i*4+4]
+					d[0] = v
+					d[1] = v
+					d[2] = v
+					d[3] = 255
 				}
 			}
+		}
+		if out != nil {
+			copy(out.Pix[out.PixOffset(rect.Min.X, y):], outLine)
 		}
 	}
 
@@ -165,26 +188,28 @@ func MatchPixel(a, b image.Image, opts ...MatchOption) (int, error) {
 	return diff, nil
 }
 
-func colorDelta(a, b color.Color, yOnly bool) float64 {
-	ca := color.RGBAModel.Convert(a).(color.RGBA)
-	cb := color.RGBAModel.Convert(b).(color.RGBA)
-	if ca.A == cb.A && ca.R == cb.R && ca.G == cb.G && ca.B == cb.B {
+func colorDelta(a, b *rgba, yOnly bool) float64 {
+	if a.A == b.A && a.R == b.R && a.G == b.G && a.B == b.B {
 		return 0
 	}
-	fa := rgbaFromColor(ca)
-	fb := rgbaFromColor(cb)
+	ar, ag, ab, aa := rgbaFromColor(a)
+	if aa < 255 {
+		ar, ag, ab = blendRGBA(ar, ag, ab, aa)
+	}
 
-	blendRGBA(fa)
-	blendRGBA(fb)
+	br, bg, bb, ba := rgbaFromColor(b)
+	if ba < 255 {
+		br, bg, bb = blendRGBA(br, bg, bb, ba)
+	}
 
-	ya := rgbaToY(fa)
-	yb := rgbaToY(fb)
+	ya := rgbaToY(ar, ag, ab)
+	yb := rgbaToY(br, bg, bb)
 	y := ya - yb
 	if yOnly {
 		return y
 	}
-	i := rgbaToI(fa) - rgbaToI(fb)
-	q := rgbaToQ(fa) - rgbaToQ(fb)
+	i := rgbaToI(ar, ag, ab) - rgbaToI(br, bg, bb)
+	q := rgbaToQ(ar, ag, ab) - rgbaToQ(br, bg, bb)
 	delta := 0.5053*y*y + 0.299*i*i + 0.1957*q*q
 	if ya > yb {
 		return -delta
@@ -193,32 +218,28 @@ func colorDelta(a, b color.Color, yOnly bool) float64 {
 	}
 }
 
-func blendRGBA(c *rgba) {
-	if c.A < 255 {
-		a := c.A / 255
-		c.R = blend(c.R, a)
-		c.G = blend(c.G, a)
-		c.B = blend(c.B, a)
-	}
+func blendRGBA(r, g, b, a float64) (float64, float64, float64) {
+	a /= 255
+	return blend(r, a), blend(g, a), blend(b, a)
 }
 
 func blend(c float64, a float64) float64 {
 	return 255 + (c-255)*a
 }
 
-func rgbaToY(c *rgba) float64 {
-	return c.R*0.29889531 + c.G*0.58662247 + c.B*0.11448223
+func rgbaToY(r, g, b float64) float64 {
+	return r*0.29889531 + g*0.58662247 + b*0.11448223
 }
 
-func rgbaToI(c *rgba) float64 {
-	return c.R*0.59597799 - c.G*0.27417610 - c.B*0.32180189
+func rgbaToI(r, g, b float64) float64 {
+	return r*0.59597799 - g*0.27417610 - b*0.32180189
 }
 
-func rgbaToQ(c *rgba) float64 {
-	return c.R*0.21147017 - c.G*0.52261711 + c.B*0.31114694
+func rgbaToQ(r, g, b float64) float64 {
+	return r*0.21147017 - g*0.52261711 + b*0.31114694
 }
 
-func isAntiAliased(a, b image.Image, x1, y1 int) bool {
+func isAntiAliased(a, b *imageLineReader, x1, y1 int) bool {
 	r := a.Bounds()
 	x0 := maxInt(x1-1, r.Min.X)
 	y0 := maxInt(y1-1, r.Min.Y)
@@ -239,18 +260,16 @@ func isAntiAliased(a, b image.Image, x1, y1 int) bool {
 				continue
 			}
 			delta := colorDelta(c, a.At(x, y), true)
-
-			switch {
-			case delta == 0:
+			if delta == 0 {
 				zeroes++
 				if zeroes > 2 {
 					return false
 				}
-			case delta < min:
+			} else if delta < min {
 				min = delta
 				minX = x
 				minY = y
-			case max < delta:
+			} else if delta > max {
 				max = delta
 				maxX = x
 				maxY = y
@@ -265,7 +284,7 @@ func isAntiAliased(a, b image.Image, x1, y1 int) bool {
 	return (hasManySiblings(a, minX, minY) && hasManySiblings(b, minX, minY)) || (hasManySiblings(a, maxX, maxY) && hasManySiblings(b, maxX, maxY))
 }
 
-func hasManySiblings(img image.Image, x1, y1 int) bool {
+func hasManySiblings(img *imageLineReader, x1, y1 int) bool {
 	rect := img.Bounds()
 	x0 := maxInt(x1-1, rect.Min.X)
 	y0 := maxInt(y1-1, rect.Min.Y)
@@ -276,15 +295,15 @@ func hasManySiblings(img image.Image, x1, y1 int) bool {
 		zeroes = 1
 	}
 
-	r, g, b, a := img.At(x1, y1).RGBA()
+	a := img.At(x1, y1)
 	for x := x0; x <= x2; x++ {
 		for y := y0; y <= y2; y++ {
 			if x == x1 && y == y1 {
 				continue
 			}
 
-			nr, ng, nb, na := img.At(x, y).RGBA()
-			if r == nr && g == ng && b == nb && a == na {
+			b := img.At(x, y)
+			if a.R == b.R && a.G == b.G && a.B == b.B && a.A == b.A {
 				zeroes++
 			}
 			if zeroes > 2 {
@@ -359,4 +378,144 @@ func equals(pixA, pixB []uint8, strideA, strideB int, rect image.Rectangle) bool
 		}
 	}
 	return true
+}
+
+func readLine(dst []rgba, img image.Image, y int) {
+	rect := img.Bounds()
+	switch v := img.(type) {
+	case *image.RGBA:
+		lineOffset := v.PixOffset(rect.Min.X, y)
+		for i := range dst {
+			offset := lineOffset + i*4
+			s := v.Pix[offset : offset+4 : offset+4]
+			r := uint32(s[0])
+			g := uint32(s[1])
+			b := uint32(s[2])
+			a := uint32(s[3])
+			dst[i] = rgba{r<<8 | r, g<<8 | g, b<<8 | b, a<<8 | a}
+		}
+	case *image.RGBA64:
+		lineOffset := v.PixOffset(rect.Min.X, y)
+		for i := range dst {
+			offset := lineOffset + i*8
+			s := v.Pix[offset : offset+8 : offset+8]
+			r := uint32(s[0])<<8 | uint32(s[1])
+			g := uint32(s[2])<<8 | uint32(s[3])
+			b := uint32(s[4])<<8 | uint32(s[5])
+			a := uint32(s[6])<<8 | uint32(s[7])
+			dst[i] = rgba{r, g, b, a}
+		}
+	case *image.NRGBA:
+		lineOffset := v.PixOffset(rect.Min.X, y)
+		for i := range dst {
+			offset := lineOffset + i*4
+			s := v.Pix[offset : offset+4 : offset+4]
+			r := uint32(s[0])
+			g := uint32(s[1])
+			b := uint32(s[2])
+			a := uint32(s[3])
+			dst[i] = rgba{(r<<8 | r) * a / 0xff, (g<<8 | g) * a / 0xff, (b<<8 | b) * a / 0xff, a<<8 | a}
+		}
+	case *image.NRGBA64:
+		lineOffset := v.PixOffset(rect.Min.X, y)
+		for i := range dst {
+			offset := lineOffset + i*8
+			s := v.Pix[offset : offset+8 : offset+8]
+			r := uint32(s[0])<<8 | uint32(s[1])
+			g := uint32(s[2])<<8 | uint32(s[3])
+			b := uint32(s[4])<<8 | uint32(s[5])
+			a := uint32(s[6])<<8 | uint32(s[7])
+			dst[i] = rgba{r * a / 0xffff, g * a / 0xffff, b * a / 0xffff, a}
+		}
+	case *image.Gray:
+		lineOffset := v.PixOffset(rect.Min.X, y)
+		for i := range dst {
+			y := uint32(v.Pix[lineOffset+i])
+			y |= y << 8
+			dst[i] = rgba{y, y, y, 0xffff}
+		}
+	case *image.Gray16:
+		lineOffset := v.PixOffset(rect.Min.X, y)
+		for i := range dst {
+			offset := lineOffset + i*2
+			s := v.Pix[offset : offset+2 : offset+2]
+			y := uint32(s[0])<<8 | uint32(s[1])
+			dst[i] = rgba{y, y, y, 0xffff}
+		}
+	default:
+		for i := range dst {
+			r, g, b, a := v.At(rect.Min.X+i, y).RGBA()
+			dst[i] = rgba{r, g, b, a}
+		}
+	}
+}
+
+type imageLineReader struct {
+	image image.Image
+
+	rect  image.Rectangle
+	width int
+
+	y     int
+	lines [5][]rgba
+}
+
+func newImageLineReader(img image.Image, y int) *imageLineReader {
+	rect := img.Bounds()
+	width := rect.Dx()
+	return &imageLineReader{
+		image: img,
+		rect:  rect,
+		width: width,
+		y:     y,
+	}
+}
+
+func (r *imageLineReader) Next() bool {
+	if r.y == r.rect.Max.Y {
+		return false
+	}
+	if r.lines[2] == nil {
+		for i := range r.lines {
+			y := r.y + i - 2
+			if r.rect.Min.Y <= y && y < r.rect.Max.Y {
+				line := make([]rgba, r.width)
+				readLine(line, r.image, y)
+				r.lines[i] = line
+			}
+		}
+	} else {
+		old := r.lines[0]
+		r.lines[0] = r.lines[1]
+		r.lines[1] = r.lines[2]
+		r.lines[2] = r.lines[3]
+		r.lines[3] = r.lines[4]
+		r.lines[4] = old
+		if r.rect.Min.Y <= r.y+2 && r.y+2 < r.rect.Max.Y {
+			if r.lines[4] == nil {
+				r.lines[4] = make([]rgba, r.width)
+			}
+			readLine(r.lines[4], r.image, r.y+2)
+		} else {
+			r.lines[4] = nil
+		}
+	}
+	r.y++
+	return true
+}
+
+func (r *imageLineReader) Line() []rgba {
+	return r.lines[2]
+}
+
+func (r *imageLineReader) Y() int {
+	return r.y - 1
+}
+
+func (r *imageLineReader) At(x, y int) *rgba {
+	return &r.lines[y-r.Y()+2][x]
+}
+
+func (r *imageLineReader) Bounds() image.Rectangle {
+	return r.rect
 }
