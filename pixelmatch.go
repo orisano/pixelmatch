@@ -338,6 +338,11 @@ func isIdentical(a, b image.Image) bool {
 		if ok && equals(x.Pix, y.Pix, x.Stride, y.Stride, x.Rect) {
 			return true
 		}
+	case *image.Gray16:
+		y, ok := b.(*image.Gray16)
+		if ok && equals(x.Pix, y.Pix, x.Stride, y.Stride, x.Rect) {
+			return true
+		}
 	}
 	return false
 }
