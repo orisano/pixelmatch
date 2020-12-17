@@ -315,29 +315,43 @@ func isIdentical(a, b image.Image) bool {
 	switch x := a.(type) {
 	case *image.RGBA:
 		y, ok := b.(*image.RGBA)
-		if ok && bytes.Equal(x.Pix, y.Pix) {
+		if ok && equals(x.Pix, y.Pix, x.Stride, y.Stride, x.Rect) {
 			return true
 		}
 	case *image.RGBA64:
 		y, ok := b.(*image.RGBA64)
-		if ok && bytes.Equal(x.Pix, y.Pix) {
+		if ok && equals(x.Pix, y.Pix, x.Stride, y.Stride, x.Rect) {
 			return true
 		}
 	case *image.NRGBA:
 		y, ok := b.(*image.NRGBA)
-		if ok && bytes.Equal(x.Pix, y.Pix) {
+		if ok && equals(x.Pix, y.Pix, x.Stride, y.Stride, x.Rect) {
 			return true
 		}
 	case *image.NRGBA64:
 		y, ok := b.(*image.NRGBA64)
-		if ok && bytes.Equal(x.Pix, y.Pix) {
+		if ok && equals(x.Pix, y.Pix, x.Stride, y.Stride, x.Rect) {
 			return true
 		}
 	case *image.Gray:
 		y, ok := b.(*image.Gray)
-		if ok && bytes.Equal(x.Pix, y.Pix) {
+		if ok && equals(x.Pix, y.Pix, x.Stride, y.Stride, x.Rect) {
 			return true
 		}
 	}
 	return false
+}
+
+func equals(pixA, pixB []uint8, strideA, strideB int, rect image.Rectangle) bool {
+	w := rect.Dx()
+	h := rect.Dy()
+	if w*h == len(pixA) && w*h == len(pixB) { // both is not sub-image
+		return bytes.Equal(pixA, pixB)
+	}
+	for y := 0; y < h; y++ {
+		if !bytes.Equal(pixA[y*strideA:y*strideA+w], pixB[y*strideB:y*strideB+w]) {
+			return false
+		}
+	}
+	return true
 }
