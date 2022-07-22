@@ -122,7 +122,13 @@ func MatchPixel(a, b image.Image, opts ...MatchOption) (int, error) {
 	diff := 0
 
 	rect := a.Bounds()
-	outLine := make([]uint8, rect.Dx()*4)
+	var outLine []uint8
+	if out != nil {
+		outLine = make([]uint8, rect.Dx()*4)
+		for i := range outLine {
+			outLine[i] = 0xff
+		}
+	}
 
 	y := rect.Min.Y
 	ar := newImageLineReader(a, y)
@@ -142,7 +148,6 @@ func MatchPixel(a, b image.Image, opts ...MatchOption) (int, error) {
 						d[0] = c.R
 						d[1] = c.G
 						d[2] = c.B
-						d[3] = 255
 					}
 				} else {
 					if out != nil {
@@ -152,14 +157,12 @@ func MatchPixel(a, b image.Image, opts ...MatchOption) (int, error) {
 							d[0] = c.R
 							d[1] = c.G
 							d[2] = c.B
-							d[3] = 255
 						} else {
 							c := options.diffColor
 							d := outLine[i*4 : i*4+4 : i*4+4]
 							d[0] = c.R
 							d[1] = c.G
 							d[2] = c.B
-							d[3] = 255
 						}
 					}
 					diff++
@@ -172,7 +175,6 @@ func MatchPixel(a, b image.Image, opts ...MatchOption) (int, error) {
 					d[0] = v
 					d[1] = v
 					d[2] = v
-					d[3] = 255
 				}
 			}
 		}
