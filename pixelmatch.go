@@ -414,7 +414,11 @@ func readLine(dst []rgba, img image.Image, y int) {
 			g := uint32(s[1])
 			b := uint32(s[2])
 			a := uint32(s[3])
-			dst[i] = rgba{(r<<8 | r) * a / 0xff, (g<<8 | g) * a / 0xff, (b<<8 | b) * a / 0xff, a<<8 | a}
+			if a == 0xff {
+				dst[i] = rgba{r<<8 | r, g<<8 | g, b<<8 | b, 0xffff}
+			} else {
+				dst[i] = rgba{(r<<8 | r) * a / 0xff, (g<<8 | g) * a / 0xff, (b<<8 | b) * a / 0xff, a<<8 | a}
+			}
 		}
 	case *image.NRGBA64:
 		lineOffset := v.PixOffset(rect.Min.X, y)
