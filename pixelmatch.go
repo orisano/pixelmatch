@@ -375,7 +375,7 @@ func equals(pixA, pixB []uint8, strideA, strideB int, rect image.Rectangle) bool
 		return bytes.Equal(pixA, pixB)
 	}
 	for y := 0; y < h; y++ {
-		if !bytes.Equal(pixA[y*strideA:y*strideA+w], pixB[y*strideB:y*strideB+w]) {
+		if !bytes.Equal(pixA[y*strideA:y*strideA+strideA], pixB[y*strideB:y*strideB+strideB]) {
 			return false
 		}
 	}
