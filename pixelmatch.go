@@ -115,6 +115,9 @@ func MatchPixel(a, b image.Image, opts ...MatchOption) (int, error) {
 				}
 			}
 		}
+		if options.writeTo != nil {
+			*options.writeTo = out
+		}
 		return 0, nil
 	}
 
