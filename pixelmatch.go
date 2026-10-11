@@ -339,46 +339,46 @@ func isIdentical(a, b image.Image) bool {
 	switch x := a.(type) {
 	case *image.RGBA:
 		y, ok := b.(*image.RGBA)
-		if ok && equals(x.Pix, y.Pix, x.Stride, y.Stride, x.Rect) {
+		if ok && equals(x.Pix, y.Pix, x.Stride, y.Stride, x.Rect, 4) {
 			return true
 		}
 	case *image.RGBA64:
 		y, ok := b.(*image.RGBA64)
-		if ok && equals(x.Pix, y.Pix, x.Stride, y.Stride, x.Rect) {
+		if ok && equals(x.Pix, y.Pix, x.Stride, y.Stride, x.Rect, 8) {
 			return true
 		}
 	case *image.NRGBA:
 		y, ok := b.(*image.NRGBA)
-		if ok && equals(x.Pix, y.Pix, x.Stride, y.Stride, x.Rect) {
+		if ok && equals(x.Pix, y.Pix, x.Stride, y.Stride, x.Rect, 4) {
 			return true
 		}
 	case *image.NRGBA64:
 		y, ok := b.(*image.NRGBA64)
-		if ok && equals(x.Pix, y.Pix, x.Stride, y.Stride, x.Rect) {
+		if ok && equals(x.Pix, y.Pix, x.Stride, y.Stride, x.Rect, 8) {
 			return true
 		}
 	case *image.Gray:
 		y, ok := b.(*image.Gray)
-		if ok && equals(x.Pix, y.Pix, x.Stride, y.Stride, x.Rect) {
+		if ok && equals(x.Pix, y.Pix, x.Stride, y.Stride, x.Rect, 1) {
 			return true
 		}
 	case *image.Gray16:
 		y, ok := b.(*image.Gray16)
-		if ok && equals(x.Pix, y.Pix, x.Stride, y.Stride, x.Rect) {
+		if ok && equals(x.Pix, y.Pix, x.Stride, y.Stride, x.Rect, 2) {
 			return true
 		}
 	}
 	return false
 }
 
-func equals(pixA, pixB []uint8, strideA, strideB int, rect image.Rectangle) bool {
-	w := rect.Dx()
+func equals(pixA, pixB []uint8, strideA, strideB int, rect image.Rectangle, bytesPerPixel int) bool {
+	w := rect.Dx() * bytesPerPixel
 	h := rect.Dy()
 	if w*h == len(pixA) && w*h == len(pixB) { // both is not sub-image
 		return bytes.Equal(pixA, pixB)
 	}
 	for y := 0; y < h; y++ {
-		if !bytes.Equal(pixA[y*strideA:y*strideA+strideA], pixB[y*strideB:y*strideB+strideB]) {
+		if !bytes.Equal(pixA[y*strideA:y*strideA+w], pixB[y*strideB:y*strideB+w]) {
 			return false
 		}
 	}
@@ -522,7 +522,7 @@ func (r *imageLineReader) Y() int {
 }
 
 func (r *imageLineReader) At(x, y int) *rgba {
-	return &r.lines[y-r.Y()+2][x]
+	return &r.lines[y-r.Y()+2][x-r.rect.Min.X]
 }
 
 func (r *imageLineReader) Bounds() image.Rectangle {
