@@ -7,19 +7,20 @@ import (
 	"testing"
 )
 
+var imageTypes = []struct {
+	name string
+	new  func(image.Rectangle) draw.Image
+}{
+	{"RGBA", func(r image.Rectangle) draw.Image { return image.NewRGBA(r) }},
+	{"RGBA64", func(r image.Rectangle) draw.Image { return image.NewRGBA64(r) }},
+	{"NRGBA", func(r image.Rectangle) draw.Image { return image.NewNRGBA(r) }},
+	{"NRGBA64", func(r image.Rectangle) draw.Image { return image.NewNRGBA64(r) }},
+	{"Gray", func(r image.Rectangle) draw.Image { return image.NewGray(r) }},
+	{"Gray16", func(r image.Rectangle) draw.Image { return image.NewGray16(r) }},
+}
+
 func TestCroppedImages(t *testing.T) {
-	constructors := []struct {
-		name string
-		new  func(image.Rectangle) draw.Image
-	}{
-		{"RGBA", func(r image.Rectangle) draw.Image { return image.NewRGBA(r) }},
-		{"RGBA64", func(r image.Rectangle) draw.Image { return image.NewRGBA64(r) }},
-		{"NRGBA", func(r image.Rectangle) draw.Image { return image.NewNRGBA(r) }},
-		{"NRGBA64", func(r image.Rectangle) draw.Image { return image.NewNRGBA64(r) }},
-		{"Gray", func(r image.Rectangle) draw.Image { return image.NewGray(r) }},
-		{"Gray16", func(r image.Rectangle) draw.Image { return image.NewGray16(r) }},
-	}
-	for _, tc := range constructors {
+	for _, tc := range imageTypes {
 		t.Run(tc.name, func(t *testing.T) {
 			// The crop reaches the parent's bottom edge and starts in the middle of a row.
 			rect := image.Rect(2, 1, 5, 4)

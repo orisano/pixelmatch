@@ -47,19 +47,19 @@ func Alpha(alpha float64) MatchOption {
 
 func AntiAliasedColor(c color.Color) MatchOption {
 	return func(o *MatchOptions) {
-		o.antiAliasedColor = color.RGBAModel.Convert(c).(color.RGBA)
+		o.antiAliasedColor = outputColor(c)
 	}
 }
 
 func DiffColor(c color.Color) MatchOption {
 	return func(o *MatchOptions) {
-		o.diffColor = color.RGBAModel.Convert(c).(color.RGBA)
+		o.diffColor = outputColor(c)
 	}
 }
 
 func DiffColorAlt(c color.Color) MatchOption {
 	return func(o *MatchOptions) {
-		diffColorAlt := color.RGBAModel.Convert(c).(color.RGBA)
+		diffColorAlt := outputColor(c)
 		o.diffColorAlt = &diffColorAlt
 	}
 }
@@ -68,17 +68,51 @@ func EnableDiffMask(o *MatchOptions) {
 	o.diffMask = true
 }
 
+// Output colors are opaque RGB markers, regardless of the supplied alpha.
+func outputColor(c color.Color) color.RGBA {
+	switch c := c.(type) {
+	case color.NRGBA:
+		return color.RGBA{R: c.R, G: c.G, B: c.B, A: 255}
+	case color.NRGBA64:
+		return color.RGBA{R: uint8(c.R >> 8), G: uint8(c.G >> 8), B: uint8(c.B >> 8), A: 255}
+	default:
+		return color.RGBAModel.Convert(c).(color.RGBA)
+	}
+}
+
+// rgba stores non-premultiplied channels in the range 0 to 65535.
 type rgba struct {
 	R, G, B, A uint32
 }
 
 func rgbaFromColor(c *rgba) (r, g, b, a float64) {
-	const x = 1.0 / 256.0
-	r = float64(c.R) * x
-	g = float64(c.G) * x
-	b = float64(c.B) * x
-	a = float64(c.A) * x
+	r = float64(c.R) / 257
+	g = float64(c.G) / 257
+	b = float64(c.B) / 257
+	a = float64(c.A) / 257
 	return
+}
+
+func unpremultiply(r, g, b, a uint32) rgba {
+	if a != 0 && a != 0xffff {
+		r = r * 0xffff / a
+		g = g * 0xffff / a
+		b = b * 0xffff / a
+	}
+	return rgba{r, g, b, a}
+}
+
+func readColor(c color.Color) rgba {
+	switch c := c.(type) {
+	case color.NRGBA:
+		r, g, b, a := uint32(c.R), uint32(c.G), uint32(c.B), uint32(c.A)
+		return rgba{r<<8 | r, g<<8 | g, b<<8 | b, a<<8 | a}
+	case color.NRGBA64:
+		return rgba{uint32(c.R), uint32(c.G), uint32(c.B), uint32(c.A)}
+	default:
+		r, g, b, a := c.RGBA()
+		return unpremultiply(r, g, b, a)
+	}
 }
 
 func MatchPixel(a, b image.Image, opts ...MatchOption) (int, error) {
@@ -92,7 +126,7 @@ func MatchPixel(a, b image.Image, opts ...MatchOption) (int, error) {
 		opt(&options)
 	}
 
-	if !a.Bounds().Eq(b.Bounds()) {
+	if a.Bounds().Size() != b.Bounds().Size() {
 		return 0, ErrImageSizesNotMatch
 	}
 
@@ -126,47 +160,42 @@ func MatchPixel(a, b image.Image, opts ...MatchOption) (int, error) {
 
 	rect := a.Bounds()
 	var outLine []uint8
-	if out != nil {
-		outLine = make([]uint8, rect.Dx()*4)
-		for i := range outLine {
-			outLine[i] = 0xff
-		}
-	}
 
 	y := rect.Min.Y
 	ar := newImageLineReader(a, y)
-	br := newImageLineReader(b, y)
+	br := newImageLineReader(b, b.Bounds().Min.Y)
 	for ; ar.Next() && br.Next(); y++ {
 		aLine := ar.Line()
 		bLine := br.Line()
+		if out != nil {
+			offset := out.PixOffset(rect.Min.X, y)
+			outLine = out.Pix[offset : offset+rect.Dx()*4 : offset+rect.Dx()*4]
+		}
 
 		for i := range aLine {
 			delta := colorDelta(&aLine[i], &bLine[i], false)
 			x := rect.Min.X + i
 			if math.Abs(delta) > maxDelta {
-				if !options.includeAA && (isAntiAliased(ar, br, x, y) || isAntiAliased(br, ar, x, y)) {
+				if !options.includeAA && (isAntiAliased(ar, br, x, y) || isAntiAliased(br, ar, b.Bounds().Min.X+i, br.Y())) {
 					if out != nil && !options.diffMask {
 						c := options.antiAliasedColor
 						d := outLine[i*4 : i*4+4 : i*4+4]
 						d[0] = c.R
 						d[1] = c.G
 						d[2] = c.B
+						d[3] = 255
 					}
 				} else {
 					if out != nil {
+						c := options.diffColor
 						if delta < 0 && options.diffColorAlt != nil {
-							c := *options.diffColorAlt
-							d := outLine[i*4 : i*4+4 : i*4+4]
-							d[0] = c.R
-							d[1] = c.G
-							d[2] = c.B
-						} else {
-							c := options.diffColor
-							d := outLine[i*4 : i*4+4 : i*4+4]
-							d[0] = c.R
-							d[1] = c.G
-							d[2] = c.B
+							c = *options.diffColorAlt
 						}
+						d := outLine[i*4 : i*4+4 : i*4+4]
+						d[0] = c.R
+						d[1] = c.G
+						d[2] = c.B
+						d[3] = 255
 					}
 					diff++
 				}
@@ -178,11 +207,9 @@ func MatchPixel(a, b image.Image, opts ...MatchOption) (int, error) {
 					d[0] = v
 					d[1] = v
 					d[2] = v
+					d[3] = 255
 				}
 			}
-		}
-		if out != nil {
-			copy(out.Pix[out.PixOffset(rect.Min.X, y):], outLine)
 		}
 	}
 
@@ -286,7 +313,9 @@ func isAntiAliased(a, b *imageLineReader, x1, y1 int) bool {
 		return false
 	}
 
-	return (hasManySiblings(a, minX, minY) && hasManySiblings(b, minX, minY)) || (hasManySiblings(a, maxX, maxY) && hasManySiblings(b, maxX, maxY))
+	offset := b.Bounds().Min.Sub(r.Min)
+	return (hasManySiblings(a, minX, minY) && hasManySiblings(b, minX+offset.X, minY+offset.Y)) ||
+		(hasManySiblings(a, maxX, maxY) && hasManySiblings(b, maxX+offset.X, maxY+offset.Y))
 }
 
 func hasManySiblings(img *imageLineReader, x1, y1 int) bool {
@@ -397,7 +426,7 @@ func readLine(dst []rgba, img image.Image, y int) {
 			g := uint32(s[1])
 			b := uint32(s[2])
 			a := uint32(s[3])
-			dst[i] = rgba{r<<8 | r, g<<8 | g, b<<8 | b, a<<8 | a}
+			dst[i] = unpremultiply(r<<8|r, g<<8|g, b<<8|b, a<<8|a)
 		}
 	case *image.RGBA64:
 		lineOffset := v.PixOffset(rect.Min.X, y)
@@ -408,7 +437,7 @@ func readLine(dst []rgba, img image.Image, y int) {
 			g := uint32(s[2])<<8 | uint32(s[3])
 			b := uint32(s[4])<<8 | uint32(s[5])
 			a := uint32(s[6])<<8 | uint32(s[7])
-			dst[i] = rgba{r, g, b, a}
+			dst[i] = unpremultiply(r, g, b, a)
 		}
 	case *image.NRGBA:
 		lineOffset := v.PixOffset(rect.Min.X, y)
@@ -419,11 +448,7 @@ func readLine(dst []rgba, img image.Image, y int) {
 			g := uint32(s[1])
 			b := uint32(s[2])
 			a := uint32(s[3])
-			if a == 0xff {
-				dst[i] = rgba{r<<8 | r, g<<8 | g, b<<8 | b, 0xffff}
-			} else {
-				dst[i] = rgba{(r<<8 | r) * a / 0xff, (g<<8 | g) * a / 0xff, (b<<8 | b) * a / 0xff, a<<8 | a}
-			}
+			dst[i] = rgba{r<<8 | r, g<<8 | g, b<<8 | b, a<<8 | a}
 		}
 	case *image.NRGBA64:
 		lineOffset := v.PixOffset(rect.Min.X, y)
@@ -434,7 +459,7 @@ func readLine(dst []rgba, img image.Image, y int) {
 			g := uint32(s[2])<<8 | uint32(s[3])
 			b := uint32(s[4])<<8 | uint32(s[5])
 			a := uint32(s[6])<<8 | uint32(s[7])
-			dst[i] = rgba{r * a / 0xffff, g * a / 0xffff, b * a / 0xffff, a}
+			dst[i] = rgba{r, g, b, a}
 		}
 	case *image.Gray:
 		lineOffset := v.PixOffset(rect.Min.X, y)
@@ -453,8 +478,7 @@ func readLine(dst []rgba, img image.Image, y int) {
 		}
 	default:
 		for i := range dst {
-			r, g, b, a := v.At(rect.Min.X+i, y).RGBA()
-			dst[i] = rgba{r, g, b, a}
+			dst[i] = readColor(v.At(rect.Min.X+i, y))
 		}
 	}
 }
