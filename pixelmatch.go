@@ -10,6 +10,8 @@ import (
 
 var ErrImageSizesNotMatch = errors.New("image sizes do not match")
 
+var ErrIgnoreMaskSizeNotMatch = errors.New("ignore mask size does not match image width/height")
+
 type MatchOptions struct {
 	threshold        float64
 	includeAA        bool
@@ -18,6 +20,9 @@ type MatchOptions struct {
 	diffColor        color.RGBA
 	diffColorAlt     *color.RGBA
 	diffMask         bool
+	checkerboard     bool
+	windowSize       float64
+	ignoreMask       []byte
 	writeTo          *image.Image
 }
 
@@ -66,6 +71,32 @@ func DiffColorAlt(c color.Color) MatchOption {
 
 func EnableDiffMask(o *MatchOptions) {
 	o.diffMask = true
+}
+
+// Checkerboard controls the comparison background for semi-transparent pixels.
+// It defaults to true; false composites pixels over white.
+func Checkerboard(enabled bool) MatchOption {
+	return func(o *MatchOptions) {
+		o.checkerboard = enabled
+	}
+}
+
+// WindowSize returns the largest diff count in any N by N sliding window.
+// Finite sizes are floored and clamped to [1, min(width, height)]. Non-finite
+// sizes, including the default +Inf, return the total diff count.
+func WindowSize(size float64) MatchOption {
+	return func(o *MatchOptions) {
+		o.windowSize = size
+	}
+}
+
+// IgnoreMask skips pixels whose mask byte is nonzero. The mask must contain
+// width*height bytes in row order, independent of the images' bounds origins.
+// A nil mask disables masking. Ignored pixels are drawn as unchanged.
+func IgnoreMask(mask []byte) MatchOption {
+	return func(o *MatchOptions) {
+		o.ignoreMask = mask
+	}
 }
 
 // Output colors are opaque RGB markers, regardless of the supplied alpha.
@@ -121,30 +152,33 @@ func MatchPixel(a, b image.Image, opts ...MatchOption) (int, error) {
 		alpha:            0.1,
 		antiAliasedColor: color.RGBA{R: 255, G: 255},
 		diffColor:        color.RGBA{R: 255},
+		checkerboard:     true,
+		windowSize:       math.Inf(1),
 	}
 	for _, opt := range opts {
 		opt(&options)
 	}
 
-	if a.Bounds().Size() != b.Bounds().Size() {
+	rect, bRect := a.Bounds(), b.Bounds()
+	if rect.Size() != bRect.Size() {
 		return 0, ErrImageSizesNotMatch
+	}
+	if options.ignoreMask != nil && len(options.ignoreMask) != rect.Dx()*rect.Dy() {
+		return 0, ErrIgnoreMaskSizeNotMatch
 	}
 
 	var out *image.RGBA
 	if options.writeTo != nil {
-		out = image.NewRGBA(a.Bounds())
+		out = image.NewRGBA(rect)
 	}
-	aa := options.alpha / 255
 	if isIdentical(a, b) { // fast path if identical
 		if out != nil && !options.diffMask {
-			rect := a.Bounds()
 			aLine := make([]rgba, rect.Dx())
 			for y := rect.Min.Y; y < rect.Max.Y; y++ {
 				readLine(aLine, a, y)
 				for i := range aLine {
 					x := rect.Min.X + i
-					r, g, b, a := rgbaFromColor(&aLine[i])
-					v := uint8(blend(rgbaToY(r, g, b), a*aa))
+					v := grayPixel(&aLine[i], options.alpha)
 					out.SetRGBA(x, y, color.RGBA{R: v, G: v, B: v, A: 255})
 				}
 			}
@@ -155,15 +189,17 @@ func MatchPixel(a, b image.Image, opts ...MatchOption) (int, error) {
 		return 0, nil
 	}
 
-	maxDelta := 35215 * options.threshold * options.threshold
 	diff := 0
+	var diffPixels []byte
+	if !math.IsInf(options.windowSize, 0) && !math.IsNaN(options.windowSize) {
+		diffPixels = make([]byte, rect.Dx()*rect.Dy())
+	}
 
-	rect := a.Bounds()
 	var outLine []uint8
 
 	y := rect.Min.Y
 	ar := newImageLineReader(a, y)
-	br := newImageLineReader(b, b.Bounds().Min.Y)
+	br := newImageLineReader(b, bRect.Min.Y)
 	for ; ar.Next() && br.Next(); y++ {
 		aLine := ar.Line()
 		bLine := br.Line()
@@ -173,10 +209,14 @@ func MatchPixel(a, b image.Image, opts ...MatchOption) (int, error) {
 		}
 
 		for i := range aLine {
-			delta := colorDelta(&aLine[i], &bLine[i], false)
+			index := (y-rect.Min.Y)*rect.Dx() + i
+			delta := 0
+			if options.ignoreMask == nil || options.ignoreMask[index] == 0 {
+				delta = colorDelta(&aLine[i], &bLine[i], index, options.checkerboard, options.threshold)
+			}
 			x := rect.Min.X + i
-			if math.Abs(delta) > maxDelta {
-				if !options.includeAA && (isAntiAliased(ar, br, x, y) || isAntiAliased(br, ar, b.Bounds().Min.X+i, br.Y())) {
+			if delta != 0 {
+				if !options.includeAA && (isAntiAliased(ar, br, x, y) || isAntiAliased(br, ar, bRect.Min.X+i, br.Y())) {
 					if out != nil && !options.diffMask {
 						c := options.antiAliasedColor
 						d := outLine[i*4 : i*4+4 : i*4+4]
@@ -198,11 +238,13 @@ func MatchPixel(a, b image.Image, opts ...MatchOption) (int, error) {
 						d[3] = 255
 					}
 					diff++
+					if diffPixels != nil {
+						diffPixels[index] = 1
+					}
 				}
 			} else {
 				if out != nil && !options.diffMask {
-					r, g, b, a := rgbaFromColor(&aLine[i])
-					v := uint8(blend(rgbaToY(r, g, b), aa*a))
+					v := grayPixel(&aLine[i], options.alpha)
 					d := outLine[i*4 : i*4+4 : i*4+4]
 					d[0] = v
 					d[1] = v
@@ -217,58 +259,19 @@ func MatchPixel(a, b image.Image, opts ...MatchOption) (int, error) {
 		*options.writeTo = out
 	}
 
+	if diffPixels != nil && diff != 0 {
+		return maxWindowDiff(diffPixels, rect.Dx(), rect.Dy(), options.windowSize), nil
+	}
 	return diff, nil
 }
 
-func colorDelta(a, b *rgba, yOnly bool) float64 {
-	if a.A == b.A && a.R == b.R && a.G == b.G && a.B == b.B {
-		return 0
-	}
-	ar, ag, ab, aa := rgbaFromColor(a)
-	if aa < 255 {
-		ar, ag, ab = blendRGBA(ar, ag, ab, aa)
-	}
-
-	br, bg, bb, ba := rgbaFromColor(b)
-	if ba < 255 {
-		br, bg, bb = blendRGBA(br, bg, bb, ba)
-	}
-
-	ya := rgbaToY(ar, ag, ab)
-	yb := rgbaToY(br, bg, bb)
-	y := ya - yb
-	if yOnly {
-		return y
-	}
-	i := rgbaToI(ar, ag, ab) - rgbaToI(br, bg, bb)
-	q := rgbaToQ(ar, ag, ab) - rgbaToQ(br, bg, bb)
-	delta := 0.5053*y*y + 0.299*i*i + 0.1957*q*q
-	if ya > yb {
-		return -delta
-	} else {
-		return delta
-	}
-}
-
-func blendRGBA(r, g, b, a float64) (float64, float64, float64) {
-	a /= 255
-	return blend(r, a), blend(g, a), blend(b, a)
-}
-
-func blend(c float64, a float64) float64 {
-	return 255 + (c-255)*a
+func grayPixel(c *rgba, alpha float64) uint8 {
+	r, g, b, a := rgbaFromColor(c)
+	return uint8(255 + (rgbaToY(r, g, b)-255)*alpha*a/255)
 }
 
 func rgbaToY(r, g, b float64) float64 {
 	return r*0.29889531 + g*0.58662247 + b*0.11448223
-}
-
-func rgbaToI(r, g, b float64) float64 {
-	return r*0.59597799 - g*0.27417610 - b*0.32180189
-}
-
-func rgbaToQ(r, g, b float64) float64 {
-	return r*0.21147017 - g*0.52261711 + b*0.31114694
 }
 
 func isAntiAliased(a, b *imageLineReader, x1, y1 int) bool {
@@ -291,7 +294,7 @@ func isAntiAliased(a, b *imageLineReader, x1, y1 int) bool {
 			if x == x1 && y == y1 {
 				continue
 			}
-			delta := colorDelta(c, a.At(x, y), true)
+			delta := brightnessDelta(c, a.At(x, y))
 			if delta == 0 {
 				zeroes++
 				if zeroes > 2 {
