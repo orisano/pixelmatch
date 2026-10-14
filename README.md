@@ -100,6 +100,18 @@ curl -fsSL https://raw.githubusercontent.com/mapbox/pixelmatch/v8.0.0/index.js -
 node testdata/generate-v8.mjs /tmp/pixelmatch-v8.mjs > testdata/pixelmatch-v8.json
 ```
 
+## Performance
+
+Benchmarks cover identical, sparse, dense, transparent, cropped, and windowed
+comparisons, both with and without diff output, plus the PNG fixtures:
+
+```bash
+go test -run '^$' -bench BenchmarkMatchPixel -benchmem
+go test -run '^$' -bench '^BenchmarkMatchPixel/dense/count$' -benchtime=3s \
+    -cpuprofile /tmp/pixelmatch.cpu -o /tmp/pixelmatch.test
+go tool pprof /tmp/pixelmatch.test /tmp/pixelmatch.cpu
+```
+
 ## Author
 Nao Yonashiro (@orisano)
 

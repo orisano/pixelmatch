@@ -171,16 +171,15 @@ func MatchPixel(a, b image.Image, opts ...MatchOption) (int, error) {
 	if options.writeTo != nil {
 		out = image.NewRGBA(rect)
 	}
-	if isIdentical(a, b) { // fast path if identical
+	pixA, pixB, strideA, strideB, bytesPerPixel := matchingImagePixels(a, b)
+	if bytesPerPixel != 0 && equals(pixA, pixB, strideA, strideB, rect, bytesPerPixel) {
 		if out != nil && !options.diffMask {
 			aLine := make([]rgba, rect.Dx())
 			for y := rect.Min.Y; y < rect.Max.Y; y++ {
 				readLine(aLine, a, y)
-				for i := range aLine {
-					x := rect.Min.X + i
-					v := grayPixel(&aLine[i], options.alpha)
-					out.SetRGBA(x, y, color.RGBA{R: v, G: v, B: v, A: 255})
-				}
+				offset := out.PixOffset(rect.Min.X, y)
+				line := out.Pix[offset : offset+rect.Dx()*4]
+				drawGrayLine(line, aLine, options.alpha)
 			}
 		}
 		if options.writeTo != nil {
@@ -196,27 +195,43 @@ func MatchPixel(a, b image.Image, opts ...MatchOption) (int, error) {
 	}
 
 	var outLine []uint8
+	width := rect.Dx()
+	rowBytes := width * bytesPerPixel
 
 	y := rect.Min.Y
 	ar := newImageLineReader(a, y)
 	br := newImageLineReader(b, bRect.Min.Y)
 	for ; ar.Next() && br.Next(); y++ {
-		aLine := ar.Line()
-		bLine := br.Line()
+		row := y - rect.Min.Y
 		if out != nil {
 			offset := out.PixOffset(rect.Min.X, y)
-			outLine = out.Pix[offset : offset+rect.Dx()*4 : offset+rect.Dx()*4]
+			outLine = out.Pix[offset : offset+width*4 : offset+width*4]
+		}
+		// Equal rows need neither color comparison nor AA detection. Neighbor
+		// rows remain available through the lazy line readers when a diff needs them.
+		if bytesPerPixel != 0 && bytes.Equal(pixA[row*strideA:row*strideA+rowBytes], pixB[row*strideB:row*strideB+rowBytes]) {
+			if out != nil && !options.diffMask {
+				drawGrayLine(outLine, ar.Line(), options.alpha)
+			}
+			continue
+		}
+		aLine := ar.Line()
+		bLine := br.Line()
+		rowIndex := row * width
+		if !options.includeAA {
+			ar.readNeighborhood()
+			br.readNeighborhood()
 		}
 
 		for i := range aLine {
-			index := (y-rect.Min.Y)*rect.Dx() + i
+			index := rowIndex + i
 			delta := 0
 			if options.ignoreMask == nil || options.ignoreMask[index] == 0 {
 				delta = colorDelta(&aLine[i], &bLine[i], index, options.checkerboard, options.threshold)
 			}
 			x := rect.Min.X + i
 			if delta != 0 {
-				if !options.includeAA && (isAntiAliased(ar, br, x, y) || isAntiAliased(br, ar, bRect.Min.X+i, br.Y())) {
+				if !options.includeAA && (isAntiAliased(&ar, &br, x, y) || isAntiAliased(&br, &ar, bRect.Min.X+i, br.Y())) {
 					if out != nil && !options.diffMask {
 						c := options.antiAliasedColor
 						d := outLine[i*4 : i*4+4 : i*4+4]
@@ -268,6 +283,14 @@ func MatchPixel(a, b image.Image, opts ...MatchOption) (int, error) {
 func grayPixel(c *rgba, alpha float64) uint8 {
 	r, g, b, a := rgbaFromColor(c)
 	return uint8(255 + (rgbaToY(r, g, b)-255)*alpha*a/255)
+}
+
+func drawGrayLine(dst []byte, src []rgba, alpha float64) {
+	for i := range src {
+		v := grayPixel(&src[i], alpha)
+		d := dst[i*4 : i*4+4 : i*4+4]
+		d[0], d[1], d[2], d[3] = v, v, v, 255
+	}
 }
 
 func rgbaToY(r, g, b float64) float64 {
@@ -323,6 +346,19 @@ func isAntiAliased(a, b *imageLineReader, x1, y1 int) bool {
 
 func hasManySiblings(img *imageLineReader, x1, y1 int) bool {
 	rect := img.Bounds()
+	row := y1 - img.Y() + 2
+	if img.siblings[row] == nil {
+		if img.siblingBuffer == nil {
+			img.siblingBuffer = make([]byte, img.width*minInt(5, rect.Dy()))
+		}
+		img.siblings[row] = img.siblingBuffer[:img.width:img.width]
+		img.siblingBuffer = img.siblingBuffer[img.width:]
+	}
+	cache := img.siblings[row]
+	index := x1 - rect.Min.X
+	if cache[index] != 0 {
+		return cache[index] == 2
+	}
 	x0 := maxInt(x1-1, rect.Min.X)
 	y0 := maxInt(y1-1, rect.Min.Y)
 	x2 := minInt(x1+1, rect.Max.X-1)
@@ -344,10 +380,12 @@ func hasManySiblings(img *imageLineReader, x1, y1 int) bool {
 				zeroes++
 			}
 			if zeroes > 2 {
+				cache[index] = 2
 				return true
 			}
 		}
 	}
+	cache[index] = 1
 	return false
 }
 
@@ -367,40 +405,41 @@ func minInt(a, b int) int {
 	}
 }
 
-func isIdentical(a, b image.Image) bool {
+// Raw pixels can only be compared directly when both images share a format.
+func matchingImagePixels(a, b image.Image) (pixA, pixB []byte, strideA, strideB, bytesPerPixel int) {
 	switch x := a.(type) {
 	case *image.RGBA:
 		y, ok := b.(*image.RGBA)
-		if ok && equals(x.Pix, y.Pix, x.Stride, y.Stride, x.Rect, 4) {
-			return true
+		if ok {
+			return x.Pix, y.Pix, x.Stride, y.Stride, 4
 		}
 	case *image.RGBA64:
 		y, ok := b.(*image.RGBA64)
-		if ok && equals(x.Pix, y.Pix, x.Stride, y.Stride, x.Rect, 8) {
-			return true
+		if ok {
+			return x.Pix, y.Pix, x.Stride, y.Stride, 8
 		}
 	case *image.NRGBA:
 		y, ok := b.(*image.NRGBA)
-		if ok && equals(x.Pix, y.Pix, x.Stride, y.Stride, x.Rect, 4) {
-			return true
+		if ok {
+			return x.Pix, y.Pix, x.Stride, y.Stride, 4
 		}
 	case *image.NRGBA64:
 		y, ok := b.(*image.NRGBA64)
-		if ok && equals(x.Pix, y.Pix, x.Stride, y.Stride, x.Rect, 8) {
-			return true
+		if ok {
+			return x.Pix, y.Pix, x.Stride, y.Stride, 8
 		}
 	case *image.Gray:
 		y, ok := b.(*image.Gray)
-		if ok && equals(x.Pix, y.Pix, x.Stride, y.Stride, x.Rect, 1) {
-			return true
+		if ok {
+			return x.Pix, y.Pix, x.Stride, y.Stride, 1
 		}
 	case *image.Gray16:
 		y, ok := b.(*image.Gray16)
-		if ok && equals(x.Pix, y.Pix, x.Stride, y.Stride, x.Rect, 2) {
-			return true
+		if ok {
+			return x.Pix, y.Pix, x.Stride, y.Stride, 2
 		}
 	}
-	return false
+	return nil, nil, 0, 0, 0
 }
 
 func equals(pixA, pixB []uint8, strideA, strideB int, rect image.Rectangle, bytesPerPixel int) bool {
@@ -492,14 +531,20 @@ type imageLineReader struct {
 	rect  image.Rectangle
 	width int
 
-	y     int
-	lines [5][]rgba
+	y      int
+	lines  [5][]rgba
+	ready  [5]bool
+	buffer []rgba
+	// Sibling counts depend only on one image, so neighboring AA checks can
+	// share them. Zero is unknown, one is false, and two is true.
+	siblings      [5][]byte
+	siblingBuffer []byte
 }
 
-func newImageLineReader(img image.Image, y int) *imageLineReader {
+func newImageLineReader(img image.Image, y int) imageLineReader {
 	rect := img.Bounds()
 	width := rect.Dx()
-	return &imageLineReader{
+	return imageLineReader{
 		image: img,
 		rect:  rect,
 		width: width,
@@ -511,29 +556,20 @@ func (r *imageLineReader) Next() bool {
 	if r.y == r.rect.Max.Y {
 		return false
 	}
-	if r.lines[2] == nil {
-		for i := range r.lines {
-			y := r.y + i - 2
-			if r.rect.Min.Y <= y && y < r.rect.Max.Y {
-				line := make([]rgba, r.width)
-				readLine(line, r.image, y)
-				r.lines[i] = line
-			}
-		}
-	} else {
+	if r.y != r.rect.Min.Y {
 		old := r.lines[0]
 		r.lines[0] = r.lines[1]
 		r.lines[1] = r.lines[2]
 		r.lines[2] = r.lines[3]
 		r.lines[3] = r.lines[4]
 		r.lines[4] = old
-		if r.rect.Min.Y <= r.y+2 && r.y+2 < r.rect.Max.Y {
-			if r.lines[4] == nil {
-				r.lines[4] = make([]rgba, r.width)
-			}
-			readLine(r.lines[4], r.image, r.y+2)
-		} else {
-			r.lines[4] = nil
+		r.ready[0], r.ready[1], r.ready[2], r.ready[3], r.ready[4] =
+			r.ready[1], r.ready[2], r.ready[3], r.ready[4], false
+		oldSiblings := r.siblings[0]
+		r.siblings[0], r.siblings[1], r.siblings[2], r.siblings[3], r.siblings[4] =
+			r.siblings[1], r.siblings[2], r.siblings[3], r.siblings[4], oldSiblings
+		for i := range r.siblings[4] {
+			r.siblings[4][i] = 0
 		}
 	}
 	r.y++
@@ -541,14 +577,39 @@ func (r *imageLineReader) Next() bool {
 }
 
 func (r *imageLineReader) Line() []rgba {
-	return r.lines[2]
+	return r.line(2)
+}
+
+func (r *imageLineReader) line(i int) []rgba {
+	if !r.ready[i] {
+		if r.lines[i] == nil {
+			if r.buffer == nil {
+				r.buffer = make([]rgba, r.width*minInt(5, r.rect.Dy()))
+			}
+			r.lines[i] = r.buffer[:r.width:r.width]
+			r.buffer = r.buffer[r.width:]
+		}
+		readLine(r.lines[i], r.image, r.Y()+i-2)
+		r.ready[i] = true
+	}
+	return r.lines[i]
 }
 
 func (r *imageLineReader) Y() int {
 	return r.y - 1
 }
 
+func (r *imageLineReader) readNeighborhood() {
+	for i := range r.lines {
+		y := r.Y() + i - 2
+		if r.rect.Min.Y <= y && y < r.rect.Max.Y {
+			r.line(i)
+		}
+	}
+}
+
 func (r *imageLineReader) At(x, y int) *rgba {
+	// readNeighborhood prepares these rows before AA detection starts.
 	return &r.lines[y-r.Y()+2][x-r.rect.Min.X]
 }
 
