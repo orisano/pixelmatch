@@ -99,22 +99,14 @@ func colorDelta(a, b *rgba, index int, checkerboard bool, threshold float64) int
 
 // AA detection uses Rec.601 luma over white, independently of checkerboard.
 // Alpha breaks ties when the composited brightness is exactly equal.
-func brightnessDelta(a, b *rgba) float64 {
-	if *a == *b {
-		return 0
+func transparentBrightnessDelta(ar, ag, ab, aa, br, bg, bb, ba float64) float64 {
+	da := aa - ba
+	dr := (ar*aa - br*ba - 255*da) / 255
+	dg := (ag*aa - bg*ba - 255*da) / 255
+	db := (ab*aa - bb*ba - 255*da) / 255
+	d := rgbaToY(dr, dg, db)
+	if d == 0 && da != 0 {
+		return da / 2
 	}
-	ar, ag, ab, aa := rgbaFromColor(a)
-	br, bg, bb, ba := rgbaFromColor(b)
-	dr, dg, db, da := ar-br, ag-bg, ab-bb, aa-ba
-	if aa < 255 || ba < 255 {
-		dr = (ar*aa - br*ba - 255*da) / 255
-		dg = (ag*aa - bg*ba - 255*da) / 255
-		db = (ab*aa - bb*ba - 255*da) / 255
-		d := rgbaToY(dr, dg, db)
-		if d == 0 && da != 0 {
-			return da / 2
-		}
-		return d
-	}
-	return rgbaToY(dr, dg, db)
+	return d
 }

@@ -312,12 +312,22 @@ func isAntiAliased(a, b *imageLineReader, x1, y1 int) bool {
 	max := 0.0
 	var minX, minY, maxX, maxY int
 	c := a.At(x1, y1)
+	// Convert the center once for all neighbors. Subtract channels before
+	// converting to luma so rounding does not change equal-brightness ties.
+	ar, ag, ab, aa := rgbaFromColor(c)
 	for x := x0; x <= x2; x++ {
 		for y := y0; y <= y2; y++ {
 			if x == x1 && y == y1 {
 				continue
 			}
-			delta := brightnessDelta(c, a.At(x, y))
+			neighbor := a.At(x, y)
+			br, bg, bb, ba := rgbaFromColor(neighbor)
+			var delta float64
+			if aa < 255 || ba < 255 {
+				delta = transparentBrightnessDelta(ar, ag, ab, aa, br, bg, bb, ba)
+			} else {
+				delta = rgbaToY(ar-br, ag-bg, ab-bb)
+			}
 			if delta == 0 {
 				zeroes++
 				if zeroes > 2 {
@@ -368,20 +378,19 @@ func hasManySiblings(img *imageLineReader, x1, y1 int) bool {
 		zeroes = 1
 	}
 
-	a := img.At(x1, y1)
-	for x := x0; x <= x2; x++ {
-		for y := y0; y <= y2; y++ {
-			if x == x1 && y == y1 {
-				continue
-			}
-
-			b := img.At(x, y)
-			if a.R == b.R && a.G == b.G && a.B == b.B && a.A == b.A {
+	a := *img.At(x1, y1)
+	firstRow := y0 - img.Y() + 2
+	rows := img.lines[firstRow : firstRow+y2-y0+1]
+	for _, row := range rows {
+		for _, b := range row[x0-rect.Min.X : x2-rect.Min.X+1] {
+			if a == b {
 				zeroes++
-			}
-			if zeroes > 2 {
-				cache[index] = 2
-				return true
+				// Including the center raises the required count by one and
+				// avoids a coordinate check for every neighbor.
+				if zeroes > 3 {
+					cache[index] = 2
+					return true
+				}
 			}
 		}
 	}
